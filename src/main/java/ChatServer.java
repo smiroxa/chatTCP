@@ -1,77 +1,131 @@
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
-import java.util.Date;
+import java.util.concurrent.PriorityBlockingQueue;
 
-import javax.swing.Timer;
+import org.apache.log4j.Logger;
 
 public class ChatServer 
 {
-	ArrayList<NetClient> clients = new ArrayList<>();
-	
+	final static Logger logger = Logger.getLogger(ChatServer.class);
+	ArrayList<NetClient> clients       = new ArrayList<>();
+	PriorityBlockingQueue<String> messagesQueue = new PriorityBlockingQueue<>();
+
 	public ChatServer() throws IOException
 	{
-		ServerSocket ss = new ServerSocket(7777);
-		Timer tm = new Timer(50, new ActionRead() );
-		tm.start();
-		System.out.println("[Trace] Server stated. Waiting for a client...");
+		ServerSocket serverSocket = new ServerSocket(7777);
+		Thread sender = new Thread( new Sender() );
+		sender.start();
+		logger.debug("Server stated. Waiting for a client..");
 		while(true)
 		{
-			Socket cs = ss.accept();
-			System.out.println("[Trace] Client connected");
-			clients.add( new NetClient(cs) );
+			Socket socket = serverSocket.accept();
+			logger.debug("New client connected..");
+			NetClient netClient = new NetClient(socket);
+			clients.add(netClient);
+			Thread reader = new Thread( new Reader(netClient) );
+			reader.start();
 		}
 	}
 
-	class ActionRead implements ActionListener
+	class Reader implements Runnable
+	{
+		private NetClient netClient;
+
+		public Reader(NetClient netClient)
+		{
+			this.netClient = netClient;
+		}
+
+		@Override
+		public void run()
+		{
+			String str = "";
+			while(true)
+			{
+				try {
+					if (this.netClient.in.available() > 0)
+                    {
+                        try
+						{
+                            str = this.netClient.in.readUTF();
+                        } catch (IOException e)
+						{
+                            e.printStackTrace();
+                        }
+                        logger.debug("read msg from client: " + this.netClient.login + " message: " + str);
+                        String cmd = str.substring(0, str.indexOf(":"));
+                        String inf = str.substring(str.indexOf(":") + 1);
+                        String msg;
+                        switch (cmd) {
+                            case "LOGIN":
+                                msg = "Join new user - " + inf;
+                                this.netClient.login = inf;
+								messagesQueue.offer(msg);
+                                break;
+                            case "MSG":
+                                msg = "message from" + this.netClient.login + " => " + inf;
+								messagesQueue.offer(msg);
+                                break;
+                            case "EXIT":
+                                msg = "user " + this.netClient.login + " disconnected ";
+                                clients.remove(this.netClient);
+								messagesQueue.offer(msg);
+								logger.debug("disconnect user, stopping process read..");
+								System.exit(0);
+								break;
+                        }
+                    }
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+				try
+				{
+					Thread.sleep(200);
+				}
+				catch (InterruptedException e)
+				{
+					e.printStackTrace();
+				}
+			}
+		}
+	}
+
+	class Sender implements Runnable
 	{
 		@Override
-		public void actionPerformed(ActionEvent e) 
+		public void run()
 		{
-			try 
+			logger.debug("Start process SENDER. Wait new clients message for..");
+			while (true)
 			{
-				for (NetClient nc : clients) 
+				if ( !messagesQueue.isEmpty() )
 				{
-					if( nc.in.available() > 0 )
+					String message = messagesQueue.poll();
+					for (NetClient netClient : clients)
 					{
-						String str = nc.in.readUTF();
-						String cmd = str.substring(0, str.indexOf(":"));
-						String inf = str.substring(str.indexOf(":") + 1);
-						String msg = "";
-						switch (cmd)
+						try
 						{
-							case "login":
-								msg = "join new user - " + inf;
-								nc.login = inf;
-								break;
-							case "msg":
-								msg = "message from "+ nc.login + " => " + inf;
-								break;
-							case "exit":
-								System.out.println(cmd);
-								msg = "user " + nc.login + " disconnected ";
-								clients.remove(nc);
-								break;
+							netClient.out.writeUTF(message);
+							logger.debug("Send message " + message + " to user: " + netClient.login);
 						}
-						System.out.println("[Trace] message => " + str);
-						for (NetClient nn : clients)
+						catch (IOException e)
 						{
-							if(nc != nn)
-							{
-								nn.out.writeUTF(msg);
-							}
+							e.printStackTrace();
 						}
 					}
 				}
-			}
-			catch (IOException e1) 
-			{
-				e1.printStackTrace();
+				try
+				{
+					Thread.sleep(50);
+				}
+				catch (InterruptedException e)
+				{
+					e.printStackTrace();
+				}
 			}
 		}
 	}
@@ -82,6 +136,7 @@ public class ChatServer
 		DataOutputStream out = null;
 		DataInputStream  in  = null;
 		String login  = null;
+
 		public NetClient(Socket cs) throws IOException
 		{
 			this.cs = cs;
